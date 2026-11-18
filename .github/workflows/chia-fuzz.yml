@@ -1,0 +1,88 @@
+name: chia-fuzz
+
+on:
+  workflow_dispatch:
+    inputs:
+      fuzz_seconds:
+        description: "Her hedef için fuzz süresi (saniye)"
+        required: false
+        default: "300"
+      quick:
+        description: "Hızlı mod: yalnızca C++ harness'lar (Rust derlemesi atlanır)"
+        required: false
+        default: "false"
+  # schedule:
+  #   - cron: "0 1 * * 0"   # her pazar gecesi (istersen aktifleştir)
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    env:
+      FUZZ_DIR: ${{ github.workspace }}
+      SRC_DIR: ${{ github.workspace }}
+      OUT_DIR: ${{ github.workspace }}/fuzz-out
+    steps:
+      - name: Checkout fuzz paketi (bu repo)
+        uses: actions/checkout@v4
+
+      - name: Checkout pos2-chip (pinlenmiş)
+        uses: actions/checkout@v4
+        with:
+          repository: Chia-Network/pos2-chip
+          path: pos2
+          ref: cdabddfa5fd993d9f715635973dd758e7e2c7718
+
+      - name: Checkout chiapos (pinlenmiş)
+        uses: actions/checkout@v4
+        with:
+          repository: Chia-Network/chiapos
+          path: chiapos
+          ref: 254dc99bfc2873ef8c592868e54ed4ece022f50c
+
+      - name: Checkout clvm_rs (pinlenmiş)
+        uses: actions/checkout@v4
+        with:
+          repository: Chia-Network/clvm_rs
+          path: clvm_rs
+          ref: 59d7e870dd4b4224309d8d0e7e952f186eac7eab
+
+      - name: Sistem paketleri
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake build-essential python3 pkg-config
+
+      - name: Rust nightly + cargo-fuzz
+        run: |
+          rustup toolchain install nightly --profile minimal
+          cargo install cargo-fuzz
+
+      - name: Cache (cargo)
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            pos2/crates/chia-pos2/fuzz
+            clvm_rs/fuzz
+
+      - name: Build (C++ harness'lar + Rust hedefleri)
+        run: bash build.sh
+        env:
+          QUICK: ${{ github.event.inputs.quick || 'false' }}
+
+      - name: Fuzz
+        run: bash run.sh
+        env:
+          FUZZ_SECONDS: ${{ github.event.inputs.fuzz_seconds || '300' }}
+          QUICK: ${{ github.event.inputs.quick || 'false' }}
+
+      - name: Bulguları yükle (crash/timeout/oom)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts
+          path: ${{ github.workspace }}/fuzz-out/artifacts
+          if-no-files-found: ignore
+          retention-days: 14
